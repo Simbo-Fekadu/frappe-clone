@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { fetchList, BASE } from "../lib/api";
+import { fetchList, BASE, apiFetch } from "../lib/api";
 import { showToast } from "../lib/ui";
 
 export default function ImportExport() {
@@ -13,12 +13,32 @@ export default function ImportExport() {
     try {
       const fd = new FormData();
       fd.append("file", file);
-      const res = await fetch(`${BASE}/api/import/${type}`, {
+      // default: perform a dry-run preview first
+      fd.append("dry_run", "1");
+      const preview = await fetch(`${BASE}/api/import/${type}`, {
         method: "POST",
         body: fd,
+      }).then((r) => r.json());
+      // preview contains inserted count and data
+      if (!preview || typeof preview.inserted === "undefined")
+        throw new Error("Preview failed");
+      // Ask user to confirm (simple confirm for now)
+      const ok = window.confirm(
+        `This import will create ${preview.inserted} ${type}. Proceed?`
+      );
+      if (!ok) {
+        setLoading(false);
+        return;
+      }
+      // actually perform import (without dry_run)
+      const fd2 = new FormData();
+      fd2.append("file", file);
+      const res2 = await fetch(`${BASE}/api/import/${type}`, {
+        method: "POST",
+        body: fd2,
       });
-      const j = await res.json();
-      if (!res.ok) throw new Error(j.error || "Import failed");
+      const j = await res2.json();
+      if (!res2.ok) throw new Error(j.error || "Import failed");
       showToast(`Imported ${j.inserted} ${type}`);
       setFile(null);
     } catch (e) {
@@ -27,6 +47,18 @@ export default function ImportExport() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const previewFile = async () => {
+    if (!file) return;
+    const fd = new FormData();
+    fd.append("file", file);
+    const res = await fetch(`${BASE}/api/import/${type}/preview`, {
+      method: "POST",
+      body: fd,
+    });
+    const j = await res.json();
+    return j;
   };
 
   const exportCsv = (t) => {
@@ -58,7 +90,29 @@ export default function ImportExport() {
         <button onClick={upload} disabled={!file || loading}>
           {loading ? "Importing…" : "Import CSV"}
         </button>
+        <button
+          onClick={async () => {
+            const p = await previewFile();
+            if (!p) return showToast("Preview failed", "error");
+            // show a simple preview in alert for now
+            const cols = p.columns.join(", ");
+            const rows = (p.rows || [])
+              .slice(0, 5)
+              .map((r) => Object.values(r).join(" | "))
+              .join("\n");
+            alert(`Columns:\n${cols}\n\nSample rows:\n${rows}`);
+          }}
+        >
+          Preview
+        </button>
         <button onClick={() => exportCsv(type)}>Export CSV</button>
+        <button
+          onClick={() =>
+            (window.location.href = `${BASE}/api/export/${type}.xlsx`)
+          }
+        >
+          Export XLSX
+        </button>
       </div>
       <div style={{ color: "#6b7280" }}>
         Notes: CSV must have header row matching fields (for contacts:

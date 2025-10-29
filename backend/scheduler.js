@@ -2,6 +2,7 @@ const { dbPromise } = require("./db");
 const cron = require("node-cron");
 const nodemailer = require("nodemailer");
 const fs = require("fs");
+const notificationsStream = require("./notifications_stream");
 
 // Simple scheduler: every minute check for notifications scheduled_for <= now and not seen
 
@@ -43,6 +44,12 @@ async function checkNotifications() {
       } catch (e) {}
       if (meta && meta.email) {
         await sendEmail(meta.email, r.title, r.body || "");
+      }
+      // push to any SSE clients
+      try {
+        notificationsStream.pushNotification(r);
+      } catch (e) {
+        console.error("[scheduler] pushNotification failed", e);
       }
       // mark seen to avoid re-sending
       await db.run("UPDATE notifications SET seen = 1 WHERE id = ?", r.id);

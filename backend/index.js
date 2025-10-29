@@ -32,6 +32,8 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
+const notificationsStream = require("./notifications_stream");
+
 // Contacts
 app.get("/api/contacts", async (req, res) => {
   const db = await dbPromise;
@@ -159,28 +161,59 @@ app.post("/api/import/contacts", upload.single("file"), async (req, res) => {
       "utf8"
     );
     const records = parse(text, { columns: true, skip_empty_lines: true });
+    // optional mapping passed as form field 'mapping' (JSON string)
+    let mapping = null;
+    try {
+      mapping = req.body.mapping ? JSON.parse(req.body.mapping) : null;
+    } catch (e) {
+      mapping = null;
+    }
+    const dry =
+      req.body.dry_run === "1" ||
+      req.body.dry_run === "true" ||
+      req.query.dry_run === "1" ||
+      req.query.dry_run === "true";
     const db = await dbPromise;
     const inserted = [];
-    await db.run("BEGIN TRANSACTION");
+    if (!dry) await db.run("BEGIN TRANSACTION");
     try {
       for (const r of records) {
-        const info = await db.run(
-          "INSERT INTO contacts (first_name, last_name, email, phone, company_id) VALUES (?,?,?,?,?)",
-          r.first_name || r.name || null,
-          r.last_name || null,
-          r.email || null,
-          r.phone || null,
-          null
-        );
-        const c = await db.get(
-          "SELECT * FROM contacts WHERE id = ?",
-          info.lastID
-        );
-        inserted.push(c);
+        // apply mapping if provided
+        const first_name =
+          mapping && mapping.first_name
+            ? r[mapping.first_name]
+            : r.first_name || r.name;
+        const last_name =
+          mapping && mapping.last_name ? r[mapping.last_name] : r.last_name;
+        const email = mapping && mapping.email ? r[mapping.email] : r.email;
+        const phone = mapping && mapping.phone ? r[mapping.phone] : r.phone;
+        if (dry) {
+          // simulate inserted row shape
+          inserted.push({
+            first_name: first_name || null,
+            last_name: last_name || null,
+            email: email || null,
+            phone: phone || null,
+          });
+        } else {
+          const info = await db.run(
+            "INSERT INTO contacts (first_name, last_name, email, phone, company_id) VALUES (?,?,?,?,?)",
+            first_name || null,
+            last_name || null,
+            email || null,
+            phone || null,
+            null
+          );
+          const c = await db.get(
+            "SELECT * FROM contacts WHERE id = ?",
+            info.lastID
+          );
+          inserted.push(c);
+        }
       }
-      await db.run("COMMIT");
+      if (!dry) await db.run("COMMIT");
     } catch (e) {
-      await db.run("ROLLBACK");
+      if (!dry) await db.run("ROLLBACK");
       throw e;
     }
     res.json({ inserted: inserted.length, data: inserted });
@@ -189,6 +222,28 @@ app.post("/api/import/contacts", upload.single("file"), async (req, res) => {
     res.status(500).json({ error: "import failed" });
   }
 });
+
+// CSV preview endpoint for contacts: returns headers and first N rows
+app.post(
+  "/api/import/contacts/preview",
+  upload.single("file"),
+  async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: "file required" });
+    try {
+      const text = fs.readFileSync(
+        path.join(uploadsDir, req.file.filename),
+        "utf8"
+      );
+      const records = parse(text, { columns: true, skip_empty_lines: true });
+      const rows = records.slice(0, 10);
+      const columns = records.length ? Object.keys(records[0]) : [];
+      res.json({ columns, rows });
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({ error: "preview failed" });
+    }
+  }
+);
 
 app.get("/api/export/contacts", async (req, res) => {
   const db = await dbPromise;
@@ -247,27 +302,67 @@ app.post("/api/import/deals", upload.single("file"), async (req, res) => {
       "utf8"
     );
     const records = parse(text, { columns: true, skip_empty_lines: true });
+    let mapping = null;
+    try {
+      mapping = req.body.mapping ? JSON.parse(req.body.mapping) : null;
+    } catch (e) {
+      mapping = null;
+    }
+    const dry =
+      req.body.dry_run === "1" ||
+      req.body.dry_run === "true" ||
+      req.query.dry_run === "1" ||
+      req.query.dry_run === "true";
     const db = await dbPromise;
     const inserted = [];
-    await db.run("BEGIN TRANSACTION");
+    if (!dry) await db.run("BEGIN TRANSACTION");
     try {
       for (const r of records) {
-        const info = await db.run(
-          "INSERT INTO deals (title, contact_id, company_id, value, stage, probability, expected_close) VALUES (?,?,?,?,?,?,?)",
-          r.title || r.name || null,
-          null,
-          null,
-          parseFloat(r.value) || 0,
-          r.stage || "prospect",
-          parseFloat(r.probability) || 0,
-          r.expected_close || null
-        );
-        const d = await db.get("SELECT * FROM deals WHERE id = ?", info.lastID);
-        inserted.push(d);
+        const title =
+          mapping && mapping.title ? r[mapping.title] : r.title || r.name;
+        const value =
+          mapping && mapping.value
+            ? parseFloat(r[mapping.value])
+            : parseFloat(r.value) || 0;
+        const stage =
+          mapping && mapping.stage ? r[mapping.stage] : r.stage || "prospect";
+        const probability =
+          mapping && mapping.probability
+            ? parseFloat(r[mapping.probability])
+            : parseFloat(r.probability) || 0;
+        const expected_close =
+          mapping && mapping.expected_close
+            ? r[mapping.expected_close]
+            : r.expected_close || null;
+        if (dry) {
+          inserted.push({
+            title: title || null,
+            value: value || 0,
+            stage: stage || "prospect",
+            probability: probability || 0,
+            expected_close: expected_close || null,
+          });
+        } else {
+          const info = await db.run(
+            "INSERT INTO deals (title, contact_id, company_id, value, stage, probability, expected_close) VALUES (?,?,?,?,?,?,?)",
+            title || null,
+            null,
+            null,
+            value || 0,
+            stage || "prospect",
+            probability || 0,
+            expected_close || null
+          );
+          const d = await db.get(
+            "SELECT * FROM deals WHERE id = ?",
+            info.lastID
+          );
+          inserted.push(d);
+        }
       }
-      await db.run("COMMIT");
+      if (!dry) await db.run("COMMIT");
     } catch (e) {
-      await db.run("ROLLBACK");
+      if (!dry) await db.run("ROLLBACK");
       throw e;
     }
     res.json({ inserted: inserted.length, data: inserted });
@@ -276,6 +371,27 @@ app.post("/api/import/deals", upload.single("file"), async (req, res) => {
     res.status(500).json({ error: "import failed" });
   }
 });
+
+app.post(
+  "/api/import/deals/preview",
+  upload.single("file"),
+  async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: "file required" });
+    try {
+      const text = fs.readFileSync(
+        path.join(uploadsDir, req.file.filename),
+        "utf8"
+      );
+      const records = parse(text, { columns: true, skip_empty_lines: true });
+      const rows = records.slice(0, 10);
+      const columns = records.length ? Object.keys(records[0]) : [];
+      res.json({ columns, rows });
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({ error: "preview failed" });
+    }
+  }
+);
 
 app.get("/api/export/deals", async (req, res) => {
   const db = await dbPromise;
@@ -357,7 +473,22 @@ app.post("/api/notifications", async (req, res) => {
     "SELECT * FROM notifications WHERE id = ?",
     info.lastID
   );
+  try {
+    notificationsStream.pushNotification(row);
+  } catch (e) {
+    console.error("Failed to push notification to SSE clients", e);
+  }
   res.status(201).json(row);
+});
+
+// SSE stream for notifications
+app.get("/api/notifications/stream", (req, res) => {
+  // optional user_id query param to filter
+  const { user_id } = req.query;
+  const client = notificationsStream.addClient(res, user_id || null);
+  req.on("close", () => {
+    notificationsStream.removeClient(client);
+  });
 });
 
 app.put("/api/notifications/:id/mark_read", async (req, res) => {
