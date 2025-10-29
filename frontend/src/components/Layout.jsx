@@ -221,6 +221,19 @@ export default function Layout() {
               </>
             )}
           </NavLink>
+          <NavLink
+            to="/import"
+            className={({ isActive }) =>
+              "nav-link" + (isActive ? " active" : "")
+            }
+          >
+            <span role="img" aria-label="import">
+              📥
+            </span>
+            {!collapsed && (
+              <span style={{ marginLeft: 6 }}>Import / Export</span>
+            )}
+          </NavLink>
         </nav>
       </aside>
       <main className="content">

@@ -7,6 +7,7 @@ import DealsList from "./components/DealsList";
 import Layout from "./components/Layout";
 import LeadsList from "./components/LeadsList";
 import PipelineDashboard from "./components/PipelineDashboard";
+import ImportExport from "./components/ImportExport";
 
 export default function App() {
   return (
@@ -41,6 +42,7 @@ export default function App() {
             }
           />
           <Route path="dashboard" element={<PipelineDashboard />} />
+          <Route path="import" element={<ImportExport />} />
           <Route path="*" element={<Navigate to="/deals" replace />} />
         </Route>
       </Routes>

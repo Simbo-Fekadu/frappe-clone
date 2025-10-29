@@ -1,12 +1,36 @@
 const express = require("express");
 const cors = require("cors");
 const { dbPromise } = require("./db");
+const path = require("path");
+const fs = require("fs");
+const multer = require("multer");
+const { parse } = require("csv-parse/sync");
+const ExcelJS = require("exceljs");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 const PORT = process.env.PORT || 4000;
+
+// Ensure uploads directory
+const uploadsDir = path.join(__dirname, "data", "uploads");
+if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+
+// Multer storage config
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, uploadsDir);
+  },
+  filename: function (req, file, cb) {
+    const safe = `${Date.now()}-${file.originalname.replace(
+      /[^a-zA-Z0-9.\-_/]/g,
+      "_"
+    )}`;
+    cb(null, safe);
+  },
+});
+const upload = multer({ storage });
 
 // Contacts
 app.get("/api/contacts", async (req, res) => {
@@ -49,6 +73,330 @@ app.get("/api/contacts", async (req, res) => {
     page: parseInt(page, 10) || 1,
     limit: parseInt(limit, 10) || 20,
   });
+});
+
+// Attachments endpoints
+app.post("/api/attachments", upload.single("file"), async (req, res) => {
+  try {
+    const db = await dbPromise;
+    if (!req.file) return res.status(400).json({ error: "file required" });
+    const { entity_type, entity_id, created_by } = req.body;
+    const info = await db.run(
+      "INSERT INTO attachments (filename, original_name, mime, size, entity_type, entity_id, created_by) VALUES (?,?,?,?,?,?,?)",
+      req.file.filename,
+      req.file.originalname,
+      req.file.mimetype,
+      req.file.size,
+      entity_type || null,
+      entity_id || null,
+      created_by || null
+    );
+    const row = await db.get(
+      "SELECT * FROM attachments WHERE id = ?",
+      info.lastID
+    );
+    res.status(201).json(row);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "upload failed" });
+  }
+});
+
+app.get("/api/attachments", async (req, res) => {
+  const db = await dbPromise;
+  const { entity_type, entity_id } = req.query;
+  const where = [];
+  const params = [];
+  if (entity_type) {
+    where.push("entity_type = ?");
+    params.push(entity_type);
+  }
+  if (entity_id) {
+    where.push("entity_id = ?");
+    params.push(entity_id);
+  }
+  const whereSQL = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  const rows = await db.all(
+    `SELECT * FROM attachments ${whereSQL} ORDER BY created_at DESC`,
+    ...params
+  );
+  res.json({ data: rows });
+});
+
+app.get("/api/attachments/:id/download", async (req, res) => {
+  const db = await dbPromise;
+  const id = req.params.id;
+  const row = await db.get("SELECT * FROM attachments WHERE id = ?", id);
+  if (!row) return res.status(404).json({ error: "Not found" });
+  const filePath = path.join(uploadsDir, row.filename);
+  if (!fs.existsSync(filePath))
+    return res.status(404).json({ error: "File missing" });
+  res.download(filePath, row.original_name || row.filename);
+});
+
+app.delete("/api/attachments/:id", async (req, res) => {
+  const db = await dbPromise;
+  const id = req.params.id;
+  const row = await db.get("SELECT * FROM attachments WHERE id = ?", id);
+  if (!row) return res.status(404).json({ error: "Not found" });
+  const filePath = path.join(uploadsDir, row.filename);
+  try {
+    await db.run("DELETE FROM attachments WHERE id = ?", id);
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    res.json({ success: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "delete failed" });
+  }
+});
+
+// CSV import endpoints (contacts, deals)
+app.post("/api/import/contacts", upload.single("file"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "file required" });
+  try {
+    const text = fs.readFileSync(
+      path.join(uploadsDir, req.file.filename),
+      "utf8"
+    );
+    const records = parse(text, { columns: true, skip_empty_lines: true });
+    const db = await dbPromise;
+    const inserted = [];
+    await db.run("BEGIN TRANSACTION");
+    try {
+      for (const r of records) {
+        const info = await db.run(
+          "INSERT INTO contacts (first_name, last_name, email, phone, company_id) VALUES (?,?,?,?,?)",
+          r.first_name || r.name || null,
+          r.last_name || null,
+          r.email || null,
+          r.phone || null,
+          null
+        );
+        const c = await db.get(
+          "SELECT * FROM contacts WHERE id = ?",
+          info.lastID
+        );
+        inserted.push(c);
+      }
+      await db.run("COMMIT");
+    } catch (e) {
+      await db.run("ROLLBACK");
+      throw e;
+    }
+    res.json({ inserted: inserted.length, data: inserted });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "import failed" });
+  }
+});
+
+app.get("/api/export/contacts", async (req, res) => {
+  const db = await dbPromise;
+  const rows = await db.all(
+    "SELECT first_name, last_name, email, phone FROM contacts ORDER BY created_at DESC"
+  );
+  const header = "first_name,last_name,email,phone\n";
+  const lines = rows.map(
+    (r) =>
+      `${(r.first_name || "").replace(/\n/g, " ")},${(
+        r.last_name || ""
+      ).replace(/\n/g, " ")},${r.email || ""},${r.phone || ""}`
+  );
+  const csv = header + lines.join("\n");
+  res.setHeader("Content-Type", "text/csv");
+  res.setHeader("Content-Disposition", 'attachment; filename="contacts.csv"');
+  res.send(csv);
+});
+
+// XLSX export for contacts
+app.get("/api/export/contacts.xlsx", async (req, res) => {
+  const db = await dbPromise;
+  const rows = await db.all(
+    "SELECT first_name, last_name, email, phone FROM contacts ORDER BY created_at DESC"
+  );
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("Contacts");
+  sheet.columns = [
+    { header: "first_name", key: "first_name", width: 20 },
+    { header: "last_name", key: "last_name", width: 20 },
+    { header: "email", key: "email", width: 30 },
+    { header: "phone", key: "phone", width: 20 },
+  ];
+  rows.forEach((r) =>
+    sheet.addRow({
+      first_name: r.first_name || "",
+      last_name: r.last_name || "",
+      email: r.email || "",
+      phone: r.phone || "",
+    })
+  );
+  res.setHeader(
+    "Content-Type",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  );
+  res.setHeader("Content-Disposition", 'attachment; filename="contacts.xlsx"');
+  await workbook.xlsx.write(res);
+  res.end();
+});
+
+app.post("/api/import/deals", upload.single("file"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "file required" });
+  try {
+    const text = fs.readFileSync(
+      path.join(uploadsDir, req.file.filename),
+      "utf8"
+    );
+    const records = parse(text, { columns: true, skip_empty_lines: true });
+    const db = await dbPromise;
+    const inserted = [];
+    await db.run("BEGIN TRANSACTION");
+    try {
+      for (const r of records) {
+        const info = await db.run(
+          "INSERT INTO deals (title, contact_id, company_id, value, stage, probability, expected_close) VALUES (?,?,?,?,?,?,?)",
+          r.title || r.name || null,
+          null,
+          null,
+          parseFloat(r.value) || 0,
+          r.stage || "prospect",
+          parseFloat(r.probability) || 0,
+          r.expected_close || null
+        );
+        const d = await db.get("SELECT * FROM deals WHERE id = ?", info.lastID);
+        inserted.push(d);
+      }
+      await db.run("COMMIT");
+    } catch (e) {
+      await db.run("ROLLBACK");
+      throw e;
+    }
+    res.json({ inserted: inserted.length, data: inserted });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "import failed" });
+  }
+});
+
+app.get("/api/export/deals", async (req, res) => {
+  const db = await dbPromise;
+  const rows = await db.all(
+    "SELECT title, value, stage, probability, expected_close FROM deals ORDER BY created_at DESC"
+  );
+  const header = "title,value,stage,probability,expected_close\n";
+  const lines = rows.map(
+    (r) =>
+      `${(r.title || "").replace(/\n/g, " ")},${r.value || 0},${
+        r.stage || ""
+      },${r.probability || 0},${r.expected_close || ""}`
+  );
+  const csv = header + lines.join("\n");
+  res.setHeader("Content-Type", "text/csv");
+  res.setHeader("Content-Disposition", 'attachment; filename="deals.csv"');
+  res.send(csv);
+});
+
+// XLSX export for deals
+app.get("/api/export/deals.xlsx", async (req, res) => {
+  const db = await dbPromise;
+  const rows = await db.all(
+    "SELECT title, value, stage, probability, expected_close FROM deals ORDER BY created_at DESC"
+  );
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("Deals");
+  sheet.columns = [
+    { header: "title", key: "title", width: 40 },
+    { header: "value", key: "value", width: 15 },
+    { header: "stage", key: "stage", width: 20 },
+    { header: "probability", key: "probability", width: 12 },
+    { header: "expected_close", key: "expected_close", width: 20 },
+  ];
+  rows.forEach((r) =>
+    sheet.addRow({
+      title: r.title || "",
+      value: r.value || 0,
+      stage: r.stage || "",
+      probability: r.probability || 0,
+      expected_close: r.expected_close || "",
+    })
+  );
+  res.setHeader(
+    "Content-Type",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  );
+  res.setHeader("Content-Disposition", 'attachment; filename="deals.xlsx"');
+  await workbook.xlsx.write(res);
+  res.end();
+});
+
+// Notifications endpoints
+app.get("/api/notifications", async (req, res) => {
+  const db = await dbPromise;
+  const { user_id } = req.query;
+  const rows = await db.all(
+    user_id
+      ? "SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC"
+      : "SELECT * FROM notifications ORDER BY created_at DESC",
+    ...(user_id ? [user_id] : [])
+  );
+  res.json({ data: rows });
+});
+
+app.post("/api/notifications", async (req, res) => {
+  const { user_id, title, body, metadata, scheduled_for } = req.body || {};
+  if (!title) return res.status(400).json({ error: "title required" });
+  const db = await dbPromise;
+  const info = await db.run(
+    "INSERT INTO notifications (user_id, title, body, metadata, scheduled_for) VALUES (?,?,?,?,?)",
+    user_id || null,
+    title,
+    body || null,
+    metadata ? JSON.stringify(metadata) : null,
+    scheduled_for || null
+  );
+  const row = await db.get(
+    "SELECT * FROM notifications WHERE id = ?",
+    info.lastID
+  );
+  res.status(201).json(row);
+});
+
+app.put("/api/notifications/:id/mark_read", async (req, res) => {
+  const id = req.params.id;
+  const db = await dbPromise;
+  await db.run("UPDATE notifications SET seen = 1 WHERE id = ?", id);
+  res.json({ success: true });
+});
+
+// Saved filters
+app.get("/api/saved_filters", async (req, res) => {
+  const db = await dbPromise;
+  const { scope } = req.query;
+  const rows = scope
+    ? await db.all(
+        "SELECT * FROM saved_filters WHERE scope = ? ORDER BY created_at DESC",
+        scope
+      )
+    : await db.all("SELECT * FROM saved_filters ORDER BY created_at DESC");
+  res.json({ data: rows });
+});
+
+app.post("/api/saved_filters", async (req, res) => {
+  const { name, scope, filters, created_by } = req.body || {};
+  if (!name || !scope)
+    return res.status(400).json({ error: "name and scope required" });
+  const db = await dbPromise;
+  const info = await db.run(
+    "INSERT INTO saved_filters (name, scope, filters, created_by) VALUES (?,?,?,?)",
+    name,
+    scope,
+    JSON.stringify(filters || {}),
+    created_by || null
+  );
+  const row = await db.get(
+    "SELECT * FROM saved_filters WHERE id = ?",
+    info.lastID
+  );
+  res.status(201).json(row);
 });
 
 app.get("/api/contacts/:id", async (req, res) => {
@@ -710,11 +1058,19 @@ async function ensureDealsForecastFields() {
     await ensureDealsPosition();
     await ensureLeadsTable();
     await ensureDealsForecastFields();
+    // ensure uploads dir exists (already created above) and other migrations are done
   } catch (e) {
     console.error("Migration error:", e);
   }
   app.listen(PORT, () => {
     console.log(`Backend listening on http://localhost:${PORT}`);
   });
+  try {
+    // start scheduler (notifications)
+    const { start } = require("./scheduler");
+    start();
+  } catch (e) {
+    console.error("Failed to start scheduler:", e);
+  }
 })();
 // (old synchronous handlers removed)

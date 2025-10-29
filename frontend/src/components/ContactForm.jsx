@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { fetchList, post, put } from "../lib/api";
+import { fetchList, post, put, BASE } from "../lib/api";
 import { showToast } from "../lib/ui";
 
 export default function ContactForm() {
@@ -30,6 +30,30 @@ export default function ContactForm() {
 
   // Support edit mode: listen for contacts:edit events
   const [editingId, setEditingId] = useState(null);
+  const [attachments, setAttachments] = useState([]);
+  useEffect(() => {
+    let mounted = true;
+    async function loadAttachments(id) {
+      if (!id) return setAttachments([]);
+      try {
+        const j = await fetchList(
+          `/api/attachments?entity_type=contact&entity_id=${id}`
+        );
+        if (mounted) setAttachments(j || []);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    if (editingId) loadAttachments(editingId);
+    const h = () => {
+      if (editingId) loadAttachments(editingId);
+    };
+    window.addEventListener("contacts:changed", h);
+    return () => {
+      mounted = false;
+      window.removeEventListener("contacts:changed", h);
+    };
+  }, [editingId]);
   useEffect(() => {
     const handler = (e) => {
       const c = e.detail;
@@ -159,6 +183,72 @@ export default function ContactForm() {
           )}
         </div>
       </form>
+      {editingId && (
+        <div style={{ marginTop: 12 }}>
+          <h3>Attachments</h3>
+          <input
+            type="file"
+            onChange={async (e) => {
+              const f = e.target.files && e.target.files[0];
+              if (!f) return;
+              const fd = new FormData();
+              fd.append("file", f);
+              fd.append("entity_type", "contact");
+              fd.append("entity_id", String(editingId));
+              try {
+                await fetch(`${BASE}/api/attachments`, {
+                  method: "POST",
+                  body: fd,
+                });
+                showToast("Uploaded");
+                const list = await fetchList(
+                  `/api/attachments?entity_type=contact&entity_id=${editingId}`
+                );
+                setAttachments(list || []);
+                window.dispatchEvent(new Event("contacts:changed"));
+              } catch (err) {
+                console.error(err);
+                showToast("Upload failed", "error");
+              }
+              e.target.value = null;
+            }}
+          />
+          <ul>
+            {attachments.map((a) => (
+              <li key={a.id} style={{ marginBottom: 6 }}>
+                <a
+                  href={`${BASE}/api/attachments/${a.id}/download`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {a.original_name || a.filename}
+                </a>
+                <button
+                  style={{ marginLeft: 8 }}
+                  onClick={async () => {
+                    try {
+                      await fetch(`${BASE}/api/attachments/${a.id}`, {
+                        method: "DELETE",
+                      });
+                      showToast("Deleted");
+                      const list = await fetchList(
+                        `/api/attachments?entity_type=contact&entity_id=${editingId}`
+                      );
+                      setAttachments(list || []);
+                      window.dispatchEvent(new Event("contacts:changed"));
+                    } catch (err) {
+                      console.error(err);
+                      showToast("Failed to delete", "error");
+                    }
+                  }}
+                >
+                  Delete
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }

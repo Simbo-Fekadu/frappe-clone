@@ -45,6 +45,41 @@ async function init() {
       FOREIGN KEY(contact_id) REFERENCES contacts(id),
       FOREIGN KEY(deal_id) REFERENCES deals(id)
     );
+
+    -- Attachments table: store metadata and link to contact or deal
+    CREATE TABLE IF NOT EXISTS attachments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      filename TEXT NOT NULL,
+      original_name TEXT,
+      mime TEXT,
+      size INTEGER,
+      entity_type TEXT, -- 'contact' | 'deal'
+      entity_id INTEGER,
+      created_by TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Notifications / in-app events
+    CREATE TABLE IF NOT EXISTS notifications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT,
+      title TEXT,
+      body TEXT,
+      seen INTEGER DEFAULT 0,
+      metadata TEXT,
+      scheduled_for DATETIME,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Saved filters / searches for lists and dashboards
+    CREATE TABLE IF NOT EXISTS saved_filters (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      scope TEXT, -- e.g., 'deals', 'contacts'
+      filters TEXT, -- JSON encoded
+      created_by TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
   `);
 
   // Seed sample data if empty
