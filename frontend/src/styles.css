@@ -1,0 +1,85 @@
+body {
+  margin: 0;
+  color: #222;
+}
+
+/* App shell */
+.app-shell {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  min-height: 100vh;
+  background: #f5f7fb;
+}
+
+.sidebar {
+  background: #ffffff;
+  border-right: 1px solid #e8ebf0;
+  padding: 16px 12px;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  box-shadow: 0 1px 0 rgba(0,0,0,0.02);
+}
+
+.brand {
+  font-weight: 700;
+  font-size: 18px;
+  padding: 8px 10px;
+  margin-bottom: 12px;
+}
+
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.nav-link {
+  display: block;
+  padding: 10px 12px;
+  border-radius: 8px;
+  color: #34495e;
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.nav-link:hover {
+  background: #f0f4ff;
+}
+
+.nav-link.active {
+  background: #e8f1ff;
+  color: #1f6feb;
+  box-shadow: inset 0 0 0 1px #cfe0ff;
+}
+
+.content {
+  padding: 20px 24px;
+}
+
+/* Responsive */
+@media (max-width: 900px) {
+  .app-shell {
+    grid-template-columns: 200px 1fr;
+  }
+}
+
+@media (max-width: 700px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+  }
+  .sidebar {
+    position: relative;
+    height: auto;
+    border-right: none;
+    border-bottom: 1px solid #e8ebf0;
+  }
+}
+input, select, button {
+  padding: 8px 10px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+}
+button {
+  cursor: pointer;
+}
